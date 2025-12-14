@@ -492,7 +492,9 @@ async function showRouteInfo(event) {
             
             // 経路詳細情報を表示
             const distance = (route.distance / 1000).toFixed(2);
-            const duration = Math.round(route.duration / 60);
+            // 時速4km（分速66.67m）で計算
+            const walkTimeMinutes = Math.round(route.distance / 66.67);
+            const duration = walkTimeMinutes;
             
             routeDetails.innerHTML = `
                 <div class="route-summary">
