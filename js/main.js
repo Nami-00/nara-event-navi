@@ -434,7 +434,22 @@ async function showRouteInfo(event) {
     // OSRM footプロファイルで徒歩ルートを取得（会場の最寄り駅 → 会場）
     try {
         let route = null;
+        let trainRoute = null; // 電車ルート用変数を追加
         
+        // 電車ルートの取得（自宅の最寄り駅 → 会場の最寄り駅）
+        if (userSettings.nearestStation && venueNearestStation && 
+            userSettings.nearestStation.id !== venueNearestStation.id) {
+            
+            console.log('電車ルート取得: ', userSettings.nearestStation.name, '→', venueNearestStation.name);
+            
+            trainRoute = await getWalkingRoute(
+                userSettings.nearestStation.lat,
+                userSettings.nearestStation.lon,
+                venueNearestStation.lat,
+                venueNearestStation.lon
+            );
+        }
+    
         if (venueNearestStation) {
             // 会場の最寄り駅から会場までのルート
             route = await getWalkingRoute(
@@ -495,22 +510,54 @@ async function showRouteInfo(event) {
             // 時速4km（分速66.67m）で計算
             const walkTimeMinutes = Math.round(route.distance / 66.67);
             const duration = walkTimeMinutes;
+            // 電車の所要時間計算（距離から概算: 平均時速30kmと仮定）
+            let trainTimeMinutes = 0;
+            let trainDistance = 0;
+            if (trainRoute) {
+                trainDistance = (trainRoute.distance / 1000).toFixed(2);
+                // 電車の平均速度を時速30km（駅間停車含む）と仮定: 距離(m) ÷ 分速500m/分
+                trainTimeMinutes = Math.ceil(trainRoute.distance / 500);
+            }
             
             routeDetails.innerHTML = `
                 <div class="route-summary">
+                    ${trainRoute ? `
+                        <h4>🚆 電車ルート（駅 → 駅）</h4>
+                        <p><strong>区間:</strong> ${userSettings.nearestStation.name}駅 → ${venueNearestStation.name}駅</p>
+                        <p><strong>距離:</strong> 約 ${trainDistance} km</p>
+                        <p><strong>所要時間:</strong> 約 ${trainTimeMinutes} 分（乗車時間の目安）</p>
+                        <p class="route-note-small">※ 待ち時間・乗り換え時間は含まれません</p>
+                        <hr style="margin: 15px 0; border: none; border-top: 1px solid #ddd;">
+                    ` : ''}
+                    
                     <h4>🚶 徒歩ルート（駅 → 会場）</h4>
                     <p><strong>距離:</strong> ${distance} km</p>
-                    <p><strong>所要時間:</strong> 約 ${duration} 分</p>
+                    <p><strong>所要時間:</strong> 約 ${walkTimeMinutes} 分</p>
                     ${venueNearestStation ? `
                         <p><strong>会場の最寄り駅:</strong> ${venueNearestStation.name}駅（${venueNearestStation.line}）</p>
-                        <p class="distance-from-station">駅から会場まで: 徒歩約${duration}分</p>
+                        <p class="distance-from-station">駅から会場まで: 徒歩約${walkTimeMinutes}分</p>
                     ` : ''}
+                    
+                    ${trainRoute ? `
+                        <hr style="margin: 15px 0; border: none; border-top: 1px solid #ddd;">
+                        <div class="total-time">
+                            <h4>⏱️ 合計所要時間（目安）</h4>
+                            <p style="font-size: 1.2em; font-weight: bold; color: #2196F3;">
+                                約 ${trainTimeMinutes + walkTimeMinutes} 分
+                            </p>
+                            <p class="route-note-small">
+                                （電車 ${trainTimeMinutes}分 + 徒歩 ${walkTimeMinutes}分）<br>
+                                ※ 待ち時間・乗り換え時間は含まれません
+                            </p>
+                        </div>
+                    ` : ''}
+                    
                     ${userSettings.nearestStation ? `
-                        <p class="reference-info"><small>※ 参考: 自宅の最寄り駅は ${userSettings.nearestStation.name}駅</small></p>
+                        <p class="reference-info"><small>※ 出発駅: ${userSettings.nearestStation.name}駅</small></p>
                     ` : ''}
                 </div>
                 <div class="route-note">
-                    <p>💡 会場の最寄り駅から会場までの徒歩ルートを表示しています。</p>
+                    <p>💡 ${trainRoute ? '電車と徒歩を組み合わせたルート' : '会場の最寄り駅から会場までの徒歩ルート'}を表示しています。</p>
                     <p>実際の所要時間は、歩行速度や交通状況により異なる場合があります。</p>
                 </div>
             `;
