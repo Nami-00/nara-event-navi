@@ -904,8 +904,12 @@ function copyRouteLink() {
 
 // イベントのフィルタリング
 function filterEvents() {
+    console.log('filterEvents 呼び出し');  // ← デバッグ用
+    
     const category = document.getElementById('categoryFilter').value;
     const walkTimeLimit = parseInt(document.getElementById('walkTimeFilter').value);
+    
+    console.log('徒歩時間制限:', walkTimeLimit);  // ← デバッグ用
     const selectedAccessibility = Array.from(document.querySelectorAll('input[name="accessibility"]:checked'))
         .map(cb => cb.value);
     
