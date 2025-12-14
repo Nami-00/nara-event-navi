@@ -769,3 +769,26 @@ select:focus {
     border-left: 4px solid #f44336;
     margin: 15px 0;
 }
+
+/* 参考マーカー（自宅・自宅の最寄り駅）*/
+.home-marker-reference,
+.station-marker-reference {
+    opacity: 0.5;
+    filter: grayscale(50%);
+}
+
+/* 経路情報の参考表示 */
+.reference-info {
+    margin-top: 10px;
+    padding-top: 10px;
+    border-top: 1px dashed #ccc;
+    color: #666;
+    font-size: 0.9em;
+}
+
+/* 駅からの距離表示 */
+.distance-from-station {
+    color: var(--primary-color);
+    font-weight: bold;
+    margin-top: 5px;
+}
