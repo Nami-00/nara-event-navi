@@ -123,7 +123,7 @@
                     <li><span class="legend-marker green">●</span> バリアフリー設備充実（3つ以上）</li>
                     <li><span class="legend-marker yellow">●</span> バリアフリー設備あり（1〜2つ）</li>
                     <li><span class="legend-marker red">●</span> バリアフリー情報なし</li>
-                    <li><span class="legend-marker blue">🚉</span> 最寄り駅（バリアフリー対応）</li>
+                    <li><span class="legend-marker blue">🚉</span> 駅（バリアフリー情報）</li>
                 </ul>
             </div>
             <div id="map" role="application" aria-label="イベント会場の地図"></div>
@@ -193,7 +193,7 @@
                     </label>
                     <label>
                         <input type="checkbox" id="smsNotification">
-                        <span class="method-icon">📱</span> SMS
+                        <span class="method-icon">💚</span> LINE
                     </label>
                     <label>
                         <input type="checkbox" id="faxNotification">
@@ -212,9 +212,12 @@
                         <label for="emailInput">メールアドレス:</label>
                         <input type="email" id="emailInput" placeholder="example@email.com">
                     </div>
-                    <div class="form-group" id="smsInputArea" style="display: none;">
-                        <label for="smsInput">携帯電話番号:</label>
-                        <input type="tel" id="smsInput" placeholder="090-1234-5678">
+                    <div class="form-group" id="lineInputArea" style="display: none;">
+                    <label for="lineInput">LINE ID または 連携コード:</label>
+                    <input type="text" id="lineInput" placeholder="例: @abc1234 または 連携コード">
+                    <p class="help-text" style="font-size: 0.85em; color: #666; margin-top: 5px;">
+                        ※ LINE通知を受け取るには、事前にLINE公式アカウントと友だち登録が必要です
+                    </p>
                     </div>
                     <div class="form-group" id="faxInputArea" style="display: none;">
                         <label for="faxInput">FAX番号:</label>
