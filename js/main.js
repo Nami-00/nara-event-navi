@@ -944,7 +944,7 @@ function filterEvents() {
             });
             
             // 時速4km（分速66.67m）で徒歩時間を計算
-            const walkTimeMinutes = Math.round(minDistance / 66.67);
+            const walkTimeMinutes = Math.round((minDistance * 1000) / 66.67);
             return walkTimeMinutes <= walkTimeLimit;
         });
     }
