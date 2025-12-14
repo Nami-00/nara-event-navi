@@ -340,9 +340,15 @@ async function showRouteInfo(event) {
         mapContainer.style.width = '100%';
     }
     
-    // 中心座標を計算
-    const centerLat = (userSettings.homeCoords.lat + event.lat) / 2;
-    const centerLon = (userSettings.homeCoords.lon + event.lon) / 2;
+    // 会場の最寄り駅を計算（重要！自宅の最寄り駅ではない）
+    const venueNearestStation = findNearestStations({lat: event.lat, lon: event.lon}, 1)[0];
+    console.log('会場の最寄り駅:', venueNearestStation ? venueNearestStation.name : 'なし');
+    
+    // 中心座標を計算（会場と会場の最寄り駅の中間）
+    const centerLat = venueNearestStation ? 
+        (venueNearestStation.lat + event.lat) / 2 : event.lat;
+    const centerLon = venueNearestStation ? 
+        (venueNearestStation.lon + event.lon) / 2 : event.lon;
     
     console.log('地図中心座標:', centerLat, centerLon);
     
@@ -366,18 +372,18 @@ async function showRouteInfo(event) {
     // マーカー配列（境界計算用）
     const markers = [];
     
-    // 出発地マーカー（自宅）- 正確な座標
-    console.log('自宅座標:', userSettings.homeCoords.lat, userSettings.homeCoords.lon);
+    // 参考: 自宅マーカー（薄く表示、ルート計算には使わない）
+    console.log('自宅座標（参考）:', userSettings.homeCoords.lat, userSettings.homeCoords.lon);
     const homeIcon = L.divIcon({
-        className: 'home-marker',
-        html: '<div style="font-size: 28px;">🏠</div>',
-        iconSize: [30, 30],
-        iconAnchor: [15, 30]
+        className: 'home-marker-reference',
+        html: '<div style="font-size: 20px; opacity: 0.5;">🏠</div>',
+        iconSize: [24, 24],
+        iconAnchor: [12, 24]
     });
-    const homeMarker = L.marker([userSettings.homeCoords.lat, userSettings.homeCoords.lon], { icon: homeIcon })
+    L.marker([userSettings.homeCoords.lat, userSettings.homeCoords.lon], { icon: homeIcon })
         .addTo(routeMap)
-        .bindPopup('🏠 自宅');
-    markers.push(homeMarker);
+        .bindPopup('🏠 自宅（参考）');
+    // markersには追加しない（境界計算に含めない）
     
     // 目的地マーカー（イベント会場）- 正確な座標
     console.log('イベント会場座標:', event.lat, event.lon);
@@ -392,29 +398,59 @@ async function showRouteInfo(event) {
         .bindPopup(`🎯 ${event.venue}`);
     markers.push(eventMarker);
     
-    // 最寄り駅マーカー（強調）- 正確な座標
-    if (userSettings.nearestStation) {
-        console.log('最寄り駅座標:', userSettings.nearestStation.lat, userSettings.nearestStation.lon);
+    // 会場の最寄り駅マーカー（強調）- 正確な座標
+    if (venueNearestStation) {
+        console.log('会場の最寄り駅座標:', venueNearestStation.lat, venueNearestStation.lon);
         const stationIcon = L.divIcon({
             className: 'station-marker-route',
             html: '<div style="font-size: 32px; font-weight: bold;">🚉</div>',
             iconSize: [35, 35],
             iconAnchor: [17.5, 35]
         });
-        const stationMarker = L.marker([userSettings.nearestStation.lat, userSettings.nearestStation.lon], { icon: stationIcon })
+        const stationMarker = L.marker([venueNearestStation.lat, venueNearestStation.lon], { icon: stationIcon })
             .addTo(routeMap)
-            .bindPopup(`🚉 ${userSettings.nearestStation.name}駅`);
+            .bindPopup(`🚉 ${venueNearestStation.name}駅<br>（会場の最寄り駅）`);
         markers.push(stationMarker);
     }
     
-    // OSRM footプロファイルで徒歩ルートを取得
+    // 参考: 自宅の最寄り駅マーカー（薄く表示）
+    if (userSettings.nearestStation) {
+        console.log('自宅の最寄り駅座標（参考）:', userSettings.nearestStation.lat, userSettings.nearestStation.lon);
+        const homeStationIcon = L.divIcon({
+            className: 'station-marker-reference',
+            html: '<div style="font-size: 20px; opacity: 0.5;">🚉</div>',
+            iconSize: [24, 24],
+            iconAnchor: [12, 24]
+        });
+        L.marker([userSettings.nearestStation.lat, userSettings.nearestStation.lon], { icon: homeStationIcon })
+            .addTo(routeMap)
+            .bindPopup(`🚉 ${userSettings.nearestStation.name}駅<br>（自宅の最寄り駅・参考）`);
+        // markersには追加しない（境界計算に含めない）
+    }
+    
+    // OSRM footプロファイルで徒歩ルートを取得（会場の最寄り駅 → 会場）
     try {
-        const route = await getWalkingRoute(
-            userSettings.homeCoords.lat,
-            userSettings.homeCoords.lon,
-            event.lat,
-            event.lon
-        );
+        let route = null;
+        
+        if (venueNearestStation) {
+            // 会場の最寄り駅から会場までのルート
+            route = await getWalkingRoute(
+                venueNearestStation.lat,
+                venueNearestStation.lon,
+                event.lat,
+                event.lon
+            );
+            console.log('ルート: 会場の最寄り駅 → 会場');
+        } else {
+            // 最寄り駅が見つからない場合は自宅からのルート（フォールバック）
+            route = await getWalkingRoute(
+                userSettings.homeCoords.lat,
+                userSettings.homeCoords.lon,
+                event.lat,
+                event.lon
+            );
+            console.log('ルート: 自宅 → 会場（フォールバック）');
+        }
         
         if (route) {
             // 徒歩ルートのみ表示（シンプル化）
@@ -457,15 +493,19 @@ async function showRouteInfo(event) {
             
             routeDetails.innerHTML = `
                 <div class="route-summary">
-                    <h4>🚶 徒歩ルート</h4>
+                    <h4>🚶 徒歩ルート（駅 → 会場）</h4>
                     <p><strong>距離:</strong> ${distance} km</p>
                     <p><strong>所要時間:</strong> 約 ${duration} 分</p>
+                    ${venueNearestStation ? `
+                        <p><strong>会場の最寄り駅:</strong> ${venueNearestStation.name}駅（${venueNearestStation.line}）</p>
+                        <p class="distance-from-station">駅から会場まで: 徒歩約${duration}分</p>
+                    ` : ''}
                     ${userSettings.nearestStation ? `
-                        <p><strong>最寄り駅:</strong> ${userSettings.nearestStation.name}駅（${userSettings.nearestStation.line}）</p>
+                        <p class="reference-info"><small>※ 参考: 自宅の最寄り駅は ${userSettings.nearestStation.name}駅</small></p>
                     ` : ''}
                 </div>
                 <div class="route-note">
-                    <p>💡 徒歩での最適ルートを表示しています。</p>
+                    <p>💡 会場の最寄り駅から会場までの徒歩ルートを表示しています。</p>
                     <p>実際の所要時間は、歩行速度や交通状況により異なる場合があります。</p>
                 </div>
             `;
