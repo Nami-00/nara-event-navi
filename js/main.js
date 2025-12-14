@@ -926,14 +926,22 @@ function filterEvents() {
     // ② 徒歩時間フィルター（v5.6新機能）
     if (!isNaN(walkTimeLimit) && walkTimeLimit > 0) {
         filteredEvents = filteredEvents.filter(event => {
-            // 会場の最寄り駅までの距離を計算
-            const nearestStation = findNearestStation(event.lat, event.lon);
-            if (nearestStation) {
-                // 時速4km（分速66.67m）で徒歩時間を計算
-                const walkTimeMinutes = Math.round(nearestStation.distance / 66.67);
-                return walkTimeMinutes <= walkTimeLimit;
-            }
-            return false;
+            // 会場の最寄り駅までの直線距離を計算（簡易版）
+            let minDistance = Infinity;
+            
+            STATIONS_DATA.forEach(station => {
+                const distance = calculateDistance(
+                    event.lat, event.lon,
+                    station.lat, station.lon
+                );
+                if (distance < minDistance) {
+                    minDistance = distance;
+                }
+            });
+            
+            // 時速4km（分速66.67m）で徒歩時間を計算
+            const walkTimeMinutes = Math.round(minDistance / 66.67);
+            return walkTimeMinutes <= walkTimeLimit;
         });
     }
     
