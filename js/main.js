@@ -1069,7 +1069,7 @@ function initNotificationMethodHandlers() {
     
     const inputAreas = {
         'emailNotification': 'emailInputArea',
-        'smsNotification': 'smsInputArea',
+        'smsNotification': 'lineInputArea',
         'faxNotification': 'faxInputArea',
         'mailNotification': 'mailInputArea'
     };
@@ -1094,7 +1094,7 @@ function updateContactInfoArea() {
     const contactArea = document.getElementById('contactInfoArea');
     const inputAreas = {
         'emailNotification': 'emailInputArea',
-        'smsNotification': 'smsInputArea',
+        'smsNotification': 'lineInputArea',
         'faxNotification': 'faxInputArea',
         'mailNotification': 'mailInputArea'
     };
@@ -1125,9 +1125,9 @@ function saveNotificationSettings() {
             enabled: document.getElementById('emailNotification')?.checked || false,
             address: document.getElementById('emailInput')?.value || ''
         },
-        sms: {
+        line: {
             enabled: document.getElementById('smsNotification')?.checked || false,
-            number: document.getElementById('smsInput')?.value || ''
+            id: document.getElementById('lineInput')?.value || ''
         },
         fax: {
             enabled: document.getElementById('faxNotification')?.checked || false,
@@ -1147,9 +1147,9 @@ function saveNotificationSettings() {
         hasError = true;
         errorMsg += 'メールアドレスを入力してください。\n';
     }
-    if (settings.sms.enabled && !settings.sms.number) {
+    if (settings.line.enabled && !settings.line.id) {
         hasError = true;
-        errorMsg += '携帯電話番号を入力してください。\n';
+        errorMsg += 'LINE ID または連携コードを入力してください。\n';
     }
     if (settings.fax.enabled && !settings.fax.number) {
         hasError = true;
@@ -1172,7 +1172,7 @@ function saveNotificationSettings() {
     // 成功メッセージ
     const methodNames = [];
     if (settings.email.enabled) methodNames.push('メール');
-    if (settings.sms.enabled) methodNames.push('SMS');
+    if (settings.line.enabled) methodNames.push('LINE');
     if (settings.fax.enabled) methodNames.push('FAX');
     if (settings.mail.enabled) methodNames.push('郵送');
     
