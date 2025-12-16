@@ -1,0 +1,258 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>なら優しいイベントナビ v6.0 - バリアフリー情報統合版</title>
+    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+    <link rel="stylesheet" href="css/style.css">
+</head>
+<body>
+    <div class="container">
+        <header>
+            <h1>なら優しいイベントナビ v6.0</h1>
+            <p class="subtitle">誰もが安心して楽しめる、奈良市のバリアフリー情報統合プラットフォーム</p>
+        </header>
+
+        <!-- ========== 表示モード切替タブ ========== -->
+        <div class="mode-tabs">
+            <button id="eventModeBtn" class="mode-tab active" aria-label="イベント表示モード">
+                📅 イベント情報
+            </button>
+            <button id="facilityModeBtn" class="mode-tab" aria-label="施設バリアフリー情報表示モード">
+                ♿ バリアフリー施設情報
+            </button>
+        </div>
+
+        <!-- ========== イベントモード ========== -->
+        <div id="eventMode" class="mode-panel active">
+            <!-- 検索・設定エリア -->
+            <div class="search-section">
+                <h2>🔍 イベントを探す</h2>
+                
+                <div class="filter-container">
+                    <!-- カテゴリーフィルタ -->
+                    <div class="filter-group">
+                        <label for="categoryFilter">カテゴリー:</label>
+                        <select id="categoryFilter" aria-label="イベントカテゴリーで絞り込み">
+                            <option value="all">すべて</option>
+                            <option value="culture">文化・芸術</option>
+                            <option value="sports">スポーツ</option>
+                            <option value="workshop">ワークショップ</option>
+                            <option value="festival">祭り・イベント</option>
+                        </select>
+                    </div>
+
+                    <!-- 最寄り駅からの徒歩時間フィルタ -->
+                    <div class="filter-group">
+                        <label for="walkTimeFilter">最寄り駅から徒歩:</label>
+                        <select id="walkTimeFilter" aria-label="最寄り駅からの徒歩時間で絞り込み">
+                            <option value="all">指定なし</option>
+                            <option value="5">5分以内</option>
+                            <option value="10">10分以内</option>
+                            <option value="15">15分以内</option>
+                            <option value="20">20分以内</option>
+                            <option value="30">30分以内</option>
+                        </select>
+                    </div>
+                </div>
+
+                <!-- バリアフリー設備フィルタ -->
+                <div class="accessibility-filters">
+                    <h3>♿ バリアフリー設備</h3>
+                    <div class="checkbox-group">
+                        <label>
+                            <input type="checkbox" id="multiPurposeToilet" value="多目的トイレ">
+                            多目的トイレ
+                        </label>
+                        <label>
+                            <input type="checkbox" id="wheelchairRental" value="車椅子貸出">
+                            車椅子貸出
+                        </label>
+                        <label>
+                            <input type="checkbox" id="serviceDog" value="盲導犬・介助犬・聴導犬同伴可">
+                            盲導犬・介助犬・聴導犬同伴可
+                        </label>
+                        <label>
+                            <input type="checkbox" id="priorityParking" value="優先駐車場">
+                            優先駐車場
+                        </label>
+                        <label>
+                            <input type="checkbox" id="elevator" value="エレベータ">
+                            エレベータ
+                        </label>
+                        <label>
+                            <input type="checkbox" id="ramp" value="段差対応">
+                            段差対応(スロープ)
+                        </label>
+                    </div>
+                </div>
+
+                <!-- 設定ボタン -->
+                <div class="action-buttons">
+                    <button id="openSettingsBtn" class="btn btn-secondary">⚙️ アクセシビリティ設定</button>
+                    <button id="openHomeAddressBtn" class="btn btn-secondary">🏠 自宅住所を登録</button>
+                </div>
+            </div>
+
+            <!-- イベント一覧 -->
+            <div class="event-list" id="eventList">
+                <!-- イベントカードが動的に生成されます -->
+            </div>
+        </div>
+
+        <!-- ========== 施設モード ========== -->
+        <div id="facilityMode" class="mode-panel">
+            <div class="search-section">
+                <h2>♿ バリアフリー施設情報 (全473件)</h2>
+                
+                <div class="filter-container">
+                    <!-- 施設タイプフィルタ -->
+                    <div class="filter-group">
+                        <label for="facilityTypeFilter">施設タイプ:</label>
+                        <select id="facilityTypeFilter" aria-label="施設タイプで絞り込み">
+                            <option value="all">すべて (473件)</option>
+                            <option value="公共施設">公共施設 (409件)</option>
+                            <option value="駅">駅 (11件)</option>
+                            <option value="観光施設">観光施設 (53件)</option>
+                        </select>
+                    </div>
+
+                    <!-- バリアフリー設備フィルタ -->
+                    <div class="filter-group">
+                        <label for="facilityBarrierFilter">バリアフリー設備:</label>
+                        <select id="facilityBarrierFilter" aria-label="バリアフリー設備で絞り込み">
+                            <option value="all">すべて</option>
+                            <option value="多目的トイレ">多目的トイレ (299件)</option>
+                            <option value="車椅子貸出">車椅子貸出 (47件)</option>
+                            <option value="盲導犬同伴可">盲導犬同伴可 (53件)</option>
+                            <option value="優先駐車場">優先駐車場 (55件)</option>
+                            <option value="エレベータ">エレベータ (71件)</option>
+                            <option value="段差対応">段差対応 (142件)</option>
+                            <option value="オストメイト">オストメイト (19件)</option>
+                        </select>
+                    </div>
+                </div>
+
+                <!-- 検索バー -->
+                <div class="search-bar">
+                    <input type="text" id="facilitySearchInput" placeholder="施設名で検索..." aria-label="施設名を検索">
+                    <button id="facilitySearchBtn" class="btn btn-primary">🔍 検索</button>
+                </div>
+            </div>
+
+            <!-- 施設一覧 -->
+            <div class="facility-list" id="facilityList">
+                <!-- 施設カードが動的に生成されます -->
+            </div>
+
+            <!-- 統計情報 -->
+            <div class="stats-panel">
+                <h3>📊 バリアフリー設備統計</h3>
+                <div id="facilityStats"></div>
+            </div>
+        </div>
+
+        <!-- 地図エリア -->
+        <div class="map-section">
+            <h2>🗺️ 地図</h2>
+            <div id="map"></div>
+            
+            <!-- 凡例 -->
+            <div class="map-legend">
+                <h3>凡例</h3>
+                <div class="legend-item">
+                    <span class="legend-icon event-icon">📍</span>
+                    <span>イベント会場</span>
+                </div>
+                <div class="legend-item">
+                    <span class="legend-icon station-icon">🚉</span>
+                    <span>駅</span>
+                </div>
+                <div class="legend-item">
+                    <span class="legend-icon facility-public">🏛️</span>
+                    <span>公共施設</span>
+                </div>
+                <div class="legend-item">
+                    <span class="legend-icon facility-tourist">🏯</span>
+                    <span>観光施設</span>
+                </div>
+            </div>
+        </div>
+
+        <!-- 経路詳細 -->
+        <div id="routeDetails" class="route-details"></div>
+    </div>
+
+    <!-- ========== モーダル: アクセシビリティ設定 ========== -->
+    <div id="settingsModal" class="modal">
+        <div class="modal-content">
+            <span class="close">&times;</span>
+            <h2>⚙️ アクセシビリティ設定</h2>
+            
+            <div class="form-group">
+                <label for="textSize">文字サイズ:</label>
+                <select id="textSize">
+                    <option value="normal">標準</option>
+                    <option value="large">大きい</option>
+                    <option value="xlarge">特大</option>
+                </select>
+            </div>
+
+            <div class="form-group">
+                <label for="contrast">コントラスト:</label>
+                <select id="contrast">
+                    <option value="normal">標準</option>
+                    <option value="high">高コントラスト</option>
+                </select>
+            </div>
+
+            <h3>📬 通知設定</h3>
+            <div class="form-group">
+                <label>
+                    <input type="checkbox" id="emailNotification">
+                    メール通知 (準備中)
+                </label>
+            </div>
+            <div class="form-group">
+                <label>
+                    <input type="checkbox" id="lineNotification">
+                    LINE通知
+                </label>
+            </div>
+            <div class="form-group" id="lineInputArea" style="display: none;">
+                <label for="lineInput">LINE ID または連携コード:</label>
+                <input type="text" id="lineInput" placeholder="例: @your-line-id または連携コード" aria-label="LINE IDまたは連携コード">
+                <small style="color: #666; display: block; margin-top: 5px;">
+                    ※ LINE公式アカウントと連携するためのIDまたはコードを入力してください
+                </small>
+            </div>
+
+            <button id="saveSettingsBtn" class="btn btn-primary">保存</button>
+        </div>
+    </div>
+
+    <!-- ========== モーダル: 自宅住所登録 ========== -->
+    <div id="homeAddressModal" class="modal">
+        <div class="modal-content">
+            <span class="close">&times;</span>
+            <h2>🏠 自宅住所を登録</h2>
+            
+            <div class="form-group">
+                <label for="homeAddress">自宅住所:</label>
+                <input type="text" id="homeAddress" placeholder="例: 奈良市左京2丁目">
+            </div>
+
+            <button id="registerHomeBtn" class="btn btn-primary">住所を登録して最寄り駅を検索</button>
+            
+            <div id="homeAddressResult" style="margin-top: 15px;"></div>
+        </div>
+    </div>
+
+    <!-- JavaScript読み込み -->
+    <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+    <script src="js/data.js"></script>
+    <script src="js/facilities_data.js"></script>
+    <script src="js/main.js"></script>
+</body>
+</html>
