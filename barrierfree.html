@@ -1,0 +1,90 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>バリアフリー情報 | ならやさしいイベントナビ v5</title>
+  <link rel="stylesheet" href="./css/style.css" />
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+</head>
+<body>
+  <header>
+    <h1>ならやさしいイベントナビ</h1>
+    <p>観光施設・公共施設・駅のバリアフリー情報</p>
+    <nav class="top-nav">
+      <a href="./index.html">イベント検索へ</a>
+      <a href="./barrierfree.html" class="active">バリアフリー情報</a>
+    </nav>
+  </header>
+
+  <div class="container">
+    <section class="bf-section">
+      <div class="bf-controls">
+        <div class="bf-tabs" role="tablist" aria-label="バリアフリー情報の種別">
+          <button type="button" class="bf-tab" data-tab="tourist" role="tab">観光施設</button>
+          <button type="button" class="bf-tab active" data-tab="public" role="tab">公共施設</button>
+          <button type="button" class="bf-tab" data-tab="station" role="tab">駅</button>
+        </div>
+
+        <div class="bf-filters">
+          <div class="bf-search">
+            <label for="searchInput">キーワード</label>
+            <input id="searchInput" type="text" placeholder="例：東大寺 / 市役所 / 近鉄奈良 など" />
+          </div>
+
+          <div class="bf-filter-row">
+            <div class="bf-filter">
+              <label for="categoryFilter">分類</label>
+              <select id="categoryFilter">
+                <option value="">すべて</option>
+              </select>
+            </div>
+
+            <div class="bf-filter">
+              <label for="stateFilter">バリアフリー状態</label>
+              <select id="stateFilter">
+                <option value="all">すべて</option>
+                <option value="any">1つ以上〇</option>
+                <option value="none">すべて×</option>
+              </select>
+            </div>
+          </div>
+
+          <fieldset class="bf-acc-filters">
+            <legend>設備で絞り込み（チェックした設備が「〇」のものだけ）</legend>
+            <label><input type="checkbox" class="acc-filter" value="multipurpose_toilet"> 多目的トイレ</label>
+            <label><input type="checkbox" class="acc-filter" value="ostomate"> オストメイトトイレ</label>
+            <label><input type="checkbox" class="acc-filter" value="wheelchair_rental"> 車椅子貸出</label>
+            <label><input type="checkbox" class="acc-filter" value="service_dog_allowed"> 盲導犬等</label>
+            <label><input type="checkbox" class="acc-filter" value="priority_parking"> 優先駐車</label>
+            <label><input type="checkbox" class="acc-filter" value="elevator"> エレベータ</label>
+            <label><input type="checkbox" class="acc-filter" value="slope"> スロープ</label>
+          </fieldset>
+
+          <div class="bf-meta">
+            <span>表示中：<strong id="activeTabLabel">観光施設</strong></span>
+            <span>件数：<strong id="resultCount">0件</strong></span>
+          </div>
+        </div>
+      </div>
+
+      <div class="bf-map-wrap">
+        <div id="bfMap" class="bf-map" aria-label="地図"></div>
+        <p class="bf-note">カードをクリックすると、地図の表示位置が移動し、ポップアップが開きます。</p>
+      </div>
+
+      <div id="bfCards" class="events-list" aria-label="バリアフリー一覧（カード表示）"></div>
+    </section>
+  </div>
+
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+
+  <!-- data -->
+  <script src="./js/tourist_facilities.js"></script>
+  <script src="./js/public_facilities.js"></script>
+  <script src="./js/stations_data.js"></script>
+
+  <!-- page logic -->
+  <script src="./js/barrierfree_page.js"></script>
+</body>
+</html>
