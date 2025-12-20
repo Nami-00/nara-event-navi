@@ -1,0 +1,1487 @@
+/**
+ * ならやさしいイベントナビ v5.6 - メイン機能（徒歩時間フィルター追加版）
+ * 更新日: 2025-12-14
+ * 修正内容: GeoJSONから全64駅の正確な座標を取得して表示
+ *   - 会場の最寄り駅を自動計算
+ *   - 駅→会場の徒歩ルートを表示
+ *   - すべての駅を地図上に表示（イベント利用の有無に関わらず）
+ */
+
+// グローバル変数
+let map;
+let routeMap;
+let eventMarkers = [];
+let stationMarkers = [];
+let routeLayer = null;
+let currentEvent = null;
+let currentRecipient = null; // 現在の利用者情報（共有機能用）
+// 共有・印刷用に直近の徒歩ルート座標を保持
+let lastWalkingRouteCoords = null; // [[lat,lng], ...]
+let lastRouteStart = null; // {lat,lng,label}
+let lastRouteEnd = null;   // {lat,lng,label}
+let userSettings = {
+    homeAddress: null,
+    homeCoords: null,
+    nearestStation: null,
+    textSize: 'medium',
+    highContrast: false,
+    savedFilters: null
+};
+
+// 初期化
+function buildCompactRouteSummary(routeText) {
+  if (!routeText) return "";
+  const t = routeText.replace(/\r/g, "");
+  // Extract nearest station (会場の最寄り駅: XXX駅)
+  const mStation = t.match(/会場の最寄り駅[:：]\s*([^\n]+?)駅/);
+  const station = mStation ? (mStation[1] + "駅") : "";
+  // Extract walking minutes (所要時間: 約 NN 分) in 徒歩ルート block
+  let walkMin = "";
+  const mWalk = t.match(/徒歩ルート[\s\S]*?所要時間[:：]\s*約\s*(\d+)\s*分/);
+  if (mWalk) walkMin = mWalk[1];
+  // Extract total minutes (約 NN 分) in 合計所要時間 block
+  let totalMin = "";
+  const mTotal = t.match(/合計所要時間[\s\S]*?約\s*(\d+)\s*分/);
+  if (mTotal) totalMin = mTotal[1];
+  // Extract train minutes (所要時間: 約 NN 分) in 電車ルート block
+  let trainMin = "";
+  const mTrain = t.match(/電車ルート[\s\S]*?所要時間[:：]\s*約\s*(\d+)\s*分/);
+  if (mTrain) trainMin = mTrain[1];
+
+  const lines = [];
+  lines.push("経路情報（目安）");
+  lines.push("");
+  if (station) lines.push(`最寄り駅：${station}`);
+  if (walkMin) lines.push(`駅から会場まで：徒歩 約${walkMin}分`);
+  if (totalMin) {
+    if (trainMin && walkMin) {
+      lines.push("");
+      lines.push(`合計所要時間：約${totalMin}分`);
+      lines.push(`（電車 約${trainMin}分 ＋ 徒歩 約${walkMin}分）`);
+    } else {
+      lines.push("");
+      lines.push(`合計所要時間：約${totalMin}分`);
+    }
+  }
+  lines.push("");
+  lines.push("※ 交通状況により前後する場合があります");
+  return lines.join("\n");
+}
+
+document.addEventListener('DOMContentLoaded', () => {
+    console.log('DOMContentLoaded - 初期化開始');
+    console.log('イベントデータ件数:', EVENTS_DATA ? EVENTS_DATA.length : 0);
+    console.log('駅データ件数:', STATIONS_DATA ? STATIONS_DATA.length : 0);
+    
+    // 地図の初期化を遅延実行
+    setTimeout(() => {
+        initMap();
+    }, 100);
+    
+    loadUserSettings();
+    displayEvents(EVENTS_DATA);
+    initEventListeners();
+    applyAccessibilitySettings();
+});
+
+// 地図の初期化
+function initMap() {
+    console.log('地図初期化開始');
+    
+    try {
+        // 地図の作成
+        map = L.map('map').setView([34.685174, 135.805000], 12);
+        
+        // OpenStreetMap標準タイル（建物情報等が表示される詳細な地図）
+        L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+            attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors',
+            subdomains: 'abc',
+            maxZoom: 19
+        }).addTo(map);
+        
+        console.log('地図タイルレイヤー追加完了');
+        
+        // 地図が完全に読み込まれてからマーカーを追加
+        map.whenReady(() => {
+            console.log('地図準備完了 - マーカー追加開始');
+            
+            // 駅マーカーを先に追加（背景として）
+            addStationMarkers();
+            
+            // イベントマーカーを追加
+            addEventMarkers(EVENTS_DATA);
+            
+            console.log('マーカー追加完了');
+        });
+        
+    } catch (error) {
+        console.error('地図初期化エラー:', error);
+    }
+}
+
+// イベントマーカーの追加（修正版）
+function addEventMarkers(events) {
+    console.log('イベントマーカー追加開始:', events.length, '件');
+    
+    // 既存のマーカーをクリア
+    eventMarkers.forEach(marker => {
+        try {
+            map.removeLayer(marker);
+        } catch (e) {
+            console.warn('マーカー削除エラー:', e);
+        }
+    });
+    eventMarkers = [];
+    
+    if (!events || events.length === 0) {
+        console.warn('イベントデータがありません');
+        return;
+    }
+    
+    events.forEach((event, index) => {
+        try {
+            // 座標の検証
+            if (!event.lat || !event.lon) {
+                console.warn(`イベント${event.id}の座標が不正:`, event);
+                return;
+            }
+            
+            const color = getMarkerColor(event.accessibility);
+            
+            // カスタムマーカーアイコンの作成
+            const icon = L.divIcon({
+                className: 'custom-marker',
+                html: `<div class="marker-inner" style="background-color: ${color}; width: 25px; height: 25px; border-radius: 50%; border: 3px solid white; box-shadow: 0 2px 5px rgba(0,0,0,0.3);"></div>`,
+                iconSize: [25, 25],
+                iconAnchor: [12.5, 12.5]
+            });
+            
+            const marker = L.marker([event.lat, event.lon], { 
+                icon,
+                title: event.name
+            }).addTo(map);
+            
+            // ポップアップの内容
+            const popupContent = `
+                <div class="map-popup">
+                    <h3>${event.name}</h3>
+                    <p><strong>日時:</strong> ${event.date} ${event.time}</p>
+                    <p><strong>会場:</strong> ${event.venue}</p>
+                    <button onclick="showEventDetail(${event.id})" class="popup-btn">詳細を見る</button>
+                </div>
+            `;
+            
+            marker.bindPopup(popupContent);
+            eventMarkers.push(marker);
+            
+            console.log(`マーカー追加: ${index + 1}/${events.length} - ${event.name}`);
+            
+        } catch (error) {
+            console.error(`イベント${event.id}のマーカー追加エラー:`, error);
+        }
+    });
+    
+    console.log('イベントマーカー追加完了:', eventMarkers.length, '個');
+}
+
+// 駅マーカーの追加（修正版）
+function addStationMarkers() {
+    console.log('駅マーカー追加開始:', STATIONS_DATA ? STATIONS_DATA.length : 0, '件');
+    
+    // 既存の駅マーカーをクリア
+    stationMarkers.forEach(marker => {
+        try {
+            map.removeLayer(marker);
+        } catch (e) {
+            console.warn('駅マーカー削除エラー:', e);
+        }
+    });
+    stationMarkers = [];
+    
+    if (!STATIONS_DATA || STATIONS_DATA.length === 0) {
+        console.warn('駅データがありません');
+        return;
+    }
+    
+    STATIONS_DATA.forEach((station, index) => {
+        try {
+            // 座標の検証
+            if (!station.lat || !station.lon) {
+                console.warn(`駅${station.id}の座標が不正:`, station);
+                return;
+            }
+            
+            const icon = L.divIcon({
+                className: 'station-marker',
+                html: `<div style="font-size: 24px; text-shadow: 2px 2px 4px rgba(0,0,0,0.5);">🚉</div>`,
+                iconSize: [30, 30],
+                iconAnchor: [15, 30]
+            });
+            
+            const marker = L.marker([station.lat, station.lon], { 
+                icon,
+                title: `${station.name}駅`
+            }).addTo(map);
+            
+            const accessibilityInfo = [];
+            if (station.accessibility.multipurpose_toilet) accessibilityInfo.push('多目的トイレ');
+            if (station.accessibility.elevator) accessibilityInfo.push('エレベータ');
+            if (station.accessibility.wheelchair_rental) accessibilityInfo.push('車椅子貸出');
+            if (station.accessibility.service_dog_allowed) accessibilityInfo.push('盲導犬OK');
+            
+            const popupContent = `
+                <div class="map-popup station-popup">
+                    <h3>🚉 ${station.name}駅</h3>
+                    <p><strong>路線:</strong> ${station.line}</p>
+                    <p><strong>運営:</strong> ${station.operator}</p>
+                    <p><strong>バリアフリー設備:</strong><br>${accessibilityInfo.join('、')}</p>
+                </div>
+            `;
+            
+            marker.bindPopup(popupContent);
+            stationMarkers.push(marker);
+            
+            console.log(`駅マーカー追加: ${index + 1}/${STATIONS_DATA.length} - ${station.name}`);
+            
+        } catch (error) {
+            console.error(`駅${station.id}のマーカー追加エラー:`, error);
+        }
+    });
+    
+    console.log('駅マーカー追加完了:', stationMarkers.length, '個');
+}
+
+// マーカーの色を決定
+function getMarkerColor(accessibility) {
+    if (!accessibility || accessibility.length === 0) return '#ff5252';
+    if (accessibility.length >= 3) return '#4caf50';
+    return '#ffc107';
+}
+
+// イベント一覧の表示
+function displayEvents(events) {
+    console.log('イベント一覧表示:', events.length, '件');
+    
+    const eventsList = document.getElementById('eventsList');
+    const eventCount = document.getElementById('eventCount');
+    
+    eventCount.textContent = events.length;
+    eventsList.innerHTML = '';
+    
+    if (events.length === 0) {
+        eventsList.innerHTML = '<p class="no-events">条件に合うイベントが見つかりませんでした。</p>';
+        return;
+    }
+    
+    events.forEach(event => {
+        const card = createEventCard(event);
+        eventsList.appendChild(card);
+    });
+}
+
+// イベントカードの作成
+function createEventCard(event) {
+    const card = document.createElement('div');
+    card.className = 'event-card';
+    card.setAttribute('role', 'listitem');
+    
+    const iconMap = {
+        '多目的トイレ': '🚻',
+        'エレベータ': '🛗',
+        '車椅子貸出': '♿',
+        '段差への対応': '🚶',
+        '盲導犬・介助犬・聴導犬同伴可': '🐕‍🦺'
+    };
+    
+    const accessibilityIcons = event.accessibility.map(item => {
+        return `<span class="accessibility-icon" title="${item}">${iconMap[item] || '✓'}</span>`;
+    }).join('');
+    
+    card.innerHTML = `
+        <div class="event-header">
+            <h3>${event.name}</h3>
+            <span class="event-category">${event.category}</span>
+        </div>
+        <div class="event-body">
+            <p class="event-date"><strong>📅 日時:</strong> ${event.date} ${event.time}</p>
+            <p class="event-venue"><strong>📍 会場:</strong> ${event.venue}</p>
+            <p class="event-description">${event.description}</p>
+            <div class="accessibility-info">
+                <strong>バリアフリー設備:</strong>
+                <div class="accessibility-icons">${accessibilityIcons || 'なし'}</div>
+            </div>
+        </div>
+        <div class="event-footer">
+            <button onclick="showEventDetail(${event.id})" class="detail-btn">詳細を見る</button>
+        </div>
+    `;
+    
+    return card;
+}
+
+// イベント詳細の表示
+function showEventDetail(eventId) {
+    console.log('イベント詳細表示:', eventId);
+    
+    const event = EVENTS_DATA.find(e => e.id === eventId);
+    if (!event) {
+        console.error('イベントが見つかりません:', eventId);
+        return;
+    }
+    
+    currentEvent = event;
+    const modal = document.getElementById('eventDetailModal');
+    const content = document.getElementById('eventDetailContent');
+    
+    const accessibilityList = event.accessibility.length > 0 
+        ? event.accessibility.map(item => `<li>${item}</li>`).join('')
+        : '<li>情報なし</li>';
+    
+    content.innerHTML = `
+        <h2>${event.name}</h2>
+        <div class="event-detail-info">
+            <p><strong>📅 日時:</strong> ${event.date} ${event.time}</p>
+            <p><strong>📍 会場:</strong> ${event.venue}</p>
+            <p><strong>🏠 住所:</strong> ${event.address}</p>
+            <p><strong>📂 カテゴリー:</strong> ${event.category}</p>
+            <p><strong>👥 定員:</strong> ${event.capacity}</p>
+            <p><strong>💰 参加費:</strong> ${event.fee}</p>
+            <p><strong>📞 問い合わせ:</strong> ${event.contact}</p>
+        </div>
+        <div class="event-description-detail">
+            <h3>イベント詳細</h3>
+            <p>${event.description}</p>
+        </div>
+        <div class="accessibility-detail">
+            <h3>バリアフリー設備</h3>
+            <ul>${accessibilityList}</ul>
+        </div>
+    `;
+    
+    // 自宅住所が登録されている場合は経路案内を表示
+    if (userSettings.homeCoords) {
+        showRouteInfo(event);
+    } else {
+        document.getElementById('routeInfoArea').style.display = 'none';
+    }
+    
+    modal.style.display = 'block';
+    modal.setAttribute('aria-hidden', 'false');
+}
+
+// 経路情報の表示
+async function showRouteInfo(event) {
+    console.log('経路情報表示開始');
+    
+    const routeInfoArea = document.getElementById('routeInfoArea');
+    const routeDetails = document.getElementById('routeDetails');
+    
+    routeInfoArea.style.display = 'block';
+    
+    // 経路地図の初期化
+    if (routeMap) {
+        routeMap.remove();
+    }
+    
+    // 地図コンテナのサイズを確認・調整（重要！）
+    const mapContainer = document.getElementById('routeMap');
+    if (mapContainer) {
+        mapContainer.style.height = '400px';
+        mapContainer.style.width = '100%';
+    }
+    
+    // 会場の最寄り駅を計算（重要！自宅の最寄り駅ではない）
+    const venueNearestStation = findNearestStations({lat: event.lat, lon: event.lon}, 1)[0];
+    console.log('会場の最寄り駅:', venueNearestStation ? venueNearestStation.name : 'なし');
+    
+    // 中心座標を計算（会場と会場の最寄り駅の中間）
+    const centerLat = venueNearestStation ? 
+        (venueNearestStation.lat + event.lat) / 2 : event.lat;
+    const centerLon = venueNearestStation ? 
+        (venueNearestStation.lon + event.lon) / 2 : event.lon;
+    
+    console.log('地図中心座標:', centerLat, centerLon);
+    
+    routeMap = L.map('routeMap', {
+        center: [centerLat, centerLon],
+        zoom: 13,
+        zoomControl: true,
+        attributionControl: true
+    });
+    
+    // OpenStreetMap標準タイル（建物情報等が表示される詳細な地図）
+    L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+        attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors',
+        subdomains: 'abc',
+        maxZoom: 19
+    }).addTo(routeMap);
+    
+    // 地図のサイズを明示的に再計算
+    setTimeout(() => {
+        routeMap.invalidateSize();
+    }, 100);
+    
+    // マーカー配列（境界計算用）
+    const markers = [];
+    
+    // 参考: 自宅マーカー（薄く表示、ルート計算には使わない）
+    console.log('自宅座標（参考）:', userSettings.homeCoords.lat, userSettings.homeCoords.lon);
+    const homeIcon = L.divIcon({
+        className: 'home-marker-reference',
+        html: '<div style="font-size: 20px; opacity: 0.5;">🏠</div>',
+        iconSize: [24, 24],
+        iconAnchor: [12, 24]
+    });
+    L.marker([userSettings.homeCoords.lat, userSettings.homeCoords.lon], { icon: homeIcon })
+        .addTo(routeMap)
+        .bindPopup('🏠 自宅（参考）');
+    // markersには追加しない（境界計算に含めない）
+    
+    // 目的地マーカー（イベント会場）- 正確な座標
+    console.log('イベント会場座標:', event.lat, event.lon);
+    const eventIcon = L.divIcon({
+        className: 'event-marker',
+        html: '<div style="font-size: 28px;">🎯</div>',
+        iconSize: [30, 30],
+        iconAnchor: [15, 30]
+    });
+    const eventMarker = L.marker([event.lat, event.lon], { icon: eventIcon })
+        .addTo(routeMap)
+        .bindPopup(`🎯 ${event.venue}`);
+    markers.push(eventMarker);
+    
+    // 会場の最寄り駅マーカー（強調）- 正確な座標
+    if (venueNearestStation) {
+        console.log('会場の最寄り駅座標:', venueNearestStation.lat, venueNearestStation.lon);
+        const stationIcon = L.divIcon({
+            className: 'station-marker-route',
+            html: '<div style="font-size: 32px; font-weight: bold;">🚉</div>',
+            iconSize: [35, 35],
+            iconAnchor: [17.5, 35]
+        });
+        const stationMarker = L.marker([venueNearestStation.lat, venueNearestStation.lon], { icon: stationIcon })
+            .addTo(routeMap)
+            .bindPopup(`🚉 ${venueNearestStation.name}駅<br>（会場の最寄り駅）`);
+        markers.push(stationMarker);
+    }
+    
+    // 参考: 自宅の最寄り駅マーカー（薄く表示）
+    if (userSettings.nearestStation) {
+        console.log('自宅の最寄り駅座標（参考）:', userSettings.nearestStation.lat, userSettings.nearestStation.lon);
+        const homeStationIcon = L.divIcon({
+            className: 'station-marker-reference',
+            html: '<div style="font-size: 20px; opacity: 0.5;">🚉</div>',
+            iconSize: [24, 24],
+            iconAnchor: [12, 24]
+        });
+        L.marker([userSettings.nearestStation.lat, userSettings.nearestStation.lon], { icon: homeStationIcon })
+            .addTo(routeMap)
+            .bindPopup(`🚉 ${userSettings.nearestStation.name}駅<br>（自宅の最寄り駅・参考）`);
+        // markersには追加しない（境界計算に含めない）
+    }
+    
+    // OSRM footプロファイルで徒歩ルートを取得（会場の最寄り駅 → 会場）
+    try {
+        let route = null;
+        let trainRoute = null; // 電車ルート用変数を追加
+        
+        // 電車ルートの取得（自宅の最寄り駅 → 会場の最寄り駅）
+        if (userSettings.nearestStation && venueNearestStation && 
+            userSettings.nearestStation.id !== venueNearestStation.id) {
+            
+            console.log('電車ルート取得: ', userSettings.nearestStation.name, '→', venueNearestStation.name);
+            
+            trainRoute = await getWalkingRoute(
+                userSettings.nearestStation.lat,
+                userSettings.nearestStation.lon,
+                venueNearestStation.lat,
+                venueNearestStation.lon
+            );
+        }
+    
+        if (venueNearestStation) {
+            // 会場の最寄り駅から会場までのルート
+            route = await getWalkingRoute(
+                venueNearestStation.lat,
+                venueNearestStation.lon,
+                event.lat,
+                event.lon
+            );
+            console.log('ルート: 会場の最寄り駅 → 会場');
+        } else {
+            // 最寄り駅が見つからない場合は自宅からのルート（フォールバック）
+            route = await getWalkingRoute(
+                userSettings.homeCoords.lat,
+                userSettings.homeCoords.lon,
+                event.lat,
+                event.lon
+            );
+            console.log('ルート: 自宅 → 会場（フォールバック）');
+        }
+        
+        if (route) {
+            // 徒歩ルートのみ表示（シンプル化）
+            const routeCoords = route.geometry.coordinates.map(coord => [coord[1], coord[0]]);
+            console.log('ルート座標数:', routeCoords.length);
+
+            // 共有・印刷用に保持（徒歩ルートのみ）
+            lastWalkingRouteCoords = routeCoords;
+            if (venueNearestStation) {
+                lastRouteStart = { lat: venueNearestStation.lat, lng: venueNearestStation.lon, label: `🚉 ${venueNearestStation.name}駅` };
+            } else {
+                lastRouteStart = { lat: userSettings.homeCoords.lat, lng: userSettings.homeCoords.lon, label: `🏠 ${userSettings.homeAddress || '出発地'}` };
+            }
+            lastRouteEnd = { lat: event.lat, lng: event.lon, label: `🎯 ${event.venue || event.name || '目的地'}` };
+            
+            if (routeLayer) {
+                routeMap.removeLayer(routeLayer);
+            }
+            
+            routeLayer = L.polyline(routeCoords, {
+                color: '#2196F3',
+                weight: 5,
+                opacity: 0.7,
+                dashArray: '10, 10'
+            }).addTo(routeMap);
+            
+            // すべてのマーカーとルートを含む境界を計算
+            const bounds = L.latLngBounds(routeCoords);
+            markers.forEach(marker => {
+                bounds.extend(marker.getLatLng());
+            });
+            
+            console.log('境界:', bounds);
+            
+            // 境界に合わせて地図を調整（パディング追加）
+            routeMap.fitBounds(bounds, { 
+                padding: [80, 80],
+                maxZoom: 15
+            });
+            
+            // 地図のサイズを再計算（重要！）
+            setTimeout(() => {
+                routeMap.invalidateSize();
+            }, 200);
+            
+            // 経路詳細情報を表示
+            const distance = (route.distance / 1000).toFixed(2);
+            // 時速4km（分速66.67m）で計算
+            const walkTimeMinutes = Math.round(route.distance / 66.67);
+            const duration = walkTimeMinutes;
+            // 電車の所要時間計算（距離から概算: 平均時速30kmと仮定）
+            let trainTimeMinutes = 0;
+            let trainDistance = 0;
+            if (trainRoute) {
+                trainDistance = (trainRoute.distance / 1000).toFixed(2);
+                // 電車の平均速度を時速30km（駅間停車含む）と仮定: 距離(m) ÷ 分速500m/分
+                trainTimeMinutes = Math.ceil(trainRoute.distance / 500);
+            }
+            
+            routeDetails.innerHTML = `
+                <div class="route-summary">
+                    ${trainRoute ? `
+                        <h4>🚆 電車ルート（駅 → 駅）</h4>
+                        <p><strong>区間:</strong> ${userSettings.nearestStation.name}駅 → ${venueNearestStation.name}駅</p>
+                        <p><strong>距離:</strong> 約 ${trainDistance} km</p>
+                        <p><strong>所要時間:</strong> 約 ${trainTimeMinutes} 分（乗車時間の目安）</p>
+                        <p class="route-note-small">※ 待ち時間・乗り換え時間は含まれません</p>
+                        <hr style="margin: 15px 0; border: none; border-top: 1px solid #ddd;">
+                    ` : ''}
+                    
+                    <h4>🚶 徒歩ルート（駅 → 会場）</h4>
+                    <p><strong>距離:</strong> ${distance} km</p>
+                    <p><strong>所要時間:</strong> 約 ${walkTimeMinutes} 分</p>
+                    ${venueNearestStation ? `
+                        <p><strong>会場の最寄り駅:</strong> ${venueNearestStation.name}駅（${venueNearestStation.line}）</p>
+                        <p class="distance-from-station">駅から会場まで: 徒歩約${walkTimeMinutes}分</p>
+                    ` : ''}
+                    
+                    ${trainRoute ? `
+                        <hr style="margin: 15px 0; border: none; border-top: 1px solid #ddd;">
+                        <div class="total-time">
+                            <h4>⏱️ 合計所要時間（目安）</h4>
+                            <p style="font-size: 1.2em; font-weight: bold; color: #2196F3;">
+                                約 ${trainTimeMinutes + walkTimeMinutes} 分
+                            </p>
+                            <p class="route-note-small">
+                                （電車 ${trainTimeMinutes}分 + 徒歩 ${walkTimeMinutes}分）<br>
+                                ※ 待ち時間・乗り換え時間は含まれません
+                            </p>
+                        </div>
+                    ` : ''}
+                    
+                    ${userSettings.nearestStation ? `
+                        <p class="reference-info"><small>※ 出発駅: ${userSettings.nearestStation.name}駅</small></p>
+                    ` : ''}
+                </div>
+                <div class="route-note">
+                    <p>💡 ${trainRoute ? '電車と徒歩を組み合わせたルート' : '会場の最寄り駅から会場までの徒歩ルート'}を表示しています。</p>
+                    <p>実際の所要時間は、歩行速度や交通状況により異なる場合があります。</p>
+                </div>
+            `;
+        } else {
+            routeDetails.innerHTML = `
+                <p class="error-message">経路情報の取得に失敗しました。</p>
+                <p>住所: ${userSettings.homeAddress} から ${event.address} までの経路を表示できませんでした。</p>
+            `;
+        }
+    } catch (error) {
+        console.error('経路取得エラー:', error);
+        routeDetails.innerHTML = `
+            <p class="error-message">経路情報の取得中にエラーが発生しました。</p>
+        `;
+    }
+}
+
+// OSRM footプロファイルで徒歩ルートを取得
+async function getWalkingRoute(startLat, startLon, endLat, endLon) {
+    const url = `https://router.project-osrm.org/route/v1/foot/${startLon},${startLat};${endLon},${endLat}?overview=full&geometries=geojson`;
+    
+    try {
+        const response = await fetch(url);
+        const data = await response.json();
+        
+        if (data.code === 'Ok' && data.routes && data.routes.length > 0) {
+            return data.routes[0];
+        }
+        return null;
+    } catch (error) {
+        console.error('OSRM APIエラー:', error);
+        return null;
+    }
+}
+
+// イベントリスナーの初期化
+function initEventListeners() {
+    console.log('イベントリスナー初期化');
+    
+    // 自宅住所設定ボタン
+    document.getElementById('homeAddressBtn').addEventListener('click', () => {
+        openModal('homeAddressModal');
+    });
+    
+    // 通知設定ボタン
+    document.getElementById('notificationBtn').addEventListener('click', () => {
+        updateNotificationModal();
+        openModal('notificationModal');
+    });
+    
+    // 文字サイズ変更ボタン
+    document.getElementById('textSizeBtn').addEventListener('click', toggleTextSize);
+    
+    // コントラスト変更ボタン
+    document.getElementById('contrastBtn').addEventListener('click', toggleContrast);
+    
+    // 絞り込み条件保存ボタン
+    document.getElementById('saveFiltersBtn').addEventListener('click', saveFilters);
+    
+    // 絞り込み条件クリアボタン
+    document.getElementById('clearFiltersBtn').addEventListener('click', clearFilters);
+    
+    // 経路共有ボタン
+    document.getElementById('shareRouteBtn').addEventListener('click', () => {
+        prepareRouteShare();
+        openModal('shareRouteModal');
+    });
+    
+    // カテゴリーフィルター
+    document.getElementById('categoryFilter').addEventListener('change', filterEvents);
+    document.getElementById('walkTimeFilter').addEventListener('change', filterEvents);
+    
+    // バリアフリー設備フィルター
+    document.querySelectorAll('input[name="accessibility"]').forEach(checkbox => {
+        checkbox.addEventListener('change', filterEvents);
+    });
+    
+    // 自宅住所フォーム送信
+    document.getElementById('homeAddressForm').addEventListener('submit', handleAddressSubmit);
+    
+    // モーダルを閉じる
+    document.querySelectorAll('.modal-close').forEach(btn => {
+        btn.addEventListener('click', (e) => {
+            const modal = e.target.closest('.modal');
+            closeModal(modal.id);
+        });
+    });
+    
+    // モーダル外クリックで閉じる
+    window.addEventListener('click', (e) => {
+        if (e.target.classList.contains('modal')) {
+            closeModal(e.target.id);
+        }
+    });
+}
+
+// 自宅住所フォーム送信処理
+async function handleAddressSubmit(e) {
+    e.preventDefault();
+    
+    const addressInput = document.getElementById('homeAddress');
+    const address = addressInput.value.trim();
+    
+    if (!address) {
+        alert('住所を入力してください。');
+        return;
+    }
+    
+    try {
+        // ジオコーディング（住所→座標）
+        const coords = await geocodeAddress(address);
+        
+        if (!coords) {
+            alert('住所の取得に失敗しました。正しい住所を入力してください。');
+            return;
+        }
+        
+        userSettings.homeAddress = address;
+        userSettings.homeCoords = coords;
+        
+        // 最寄り駅の候補を3つ取得して表示
+        const nearestStations = findNearestStations(coords, 3);
+        displayStationCandidates(nearestStations);
+        
+        // フォームを非表示、駅選択エリアを表示
+        document.getElementById('homeAddressForm').style.display = 'none';
+        document.getElementById('nearestStationsArea').style.display = 'block';
+        
+    } catch (error) {
+        console.error('住所登録エラー:', error);
+        alert('住所の登録に失敗しました。もう一度お試しください。');
+    }
+}
+
+// ジオコーディング（住所→座標）
+async function geocodeAddress(address) {
+    const url = `https://nominatim.openstreetmap.org/search?format=json&q=${encodeURIComponent(address)}&limit=1`;
+    
+    try {
+        const response = await fetch(url);
+        const data = await response.json();
+        
+        if (data && data.length > 0) {
+            return {
+                lat: parseFloat(data[0].lat),
+                lon: parseFloat(data[0].lon)
+            };
+        }
+        return null;
+    } catch (error) {
+        console.error('ジオコーディングエラー:', error);
+        return null;
+    }
+}
+
+// 最寄り駅を複数検索（デバッグ情報付き）
+function findNearestStations(coords, count = 3) {
+    console.log('最寄り駅検索開始 - 自宅座標:', coords);
+    
+    const stationsWithDistance = STATIONS_DATA.map(station => {
+        const distance = calculateDistance(
+            coords.lat, coords.lon,
+            station.lat, station.lon
+        );
+        console.log(`${station.name}駅: ${distance.toFixed(2)}km`);
+        return { ...station, distance };
+    });
+    
+    stationsWithDistance.sort((a, b) => a.distance - b.distance);
+    const nearest = stationsWithDistance.slice(0, count);
+    console.log('最寄り駅上位3件:', nearest.map(s => `${s.name}(${s.distance.toFixed(2)}km)`));
+    return nearest;
+}
+
+// 2点間の距離を計算（Haversine公式）
+function calculateDistance(lat1, lon1, lat2, lon2) {
+    // 座標検証
+    if (!lat1 || !lon1 || !lat2 || !lon2) {
+        console.error('無効な座標:', { lat1, lon1, lat2, lon2 });
+        return Infinity;
+    }
+    
+    const R = 6371; // 地球の半径 (km)
+    const dLat = (lat2 - lat1) * Math.PI / 180;
+    const dLon = (lon2 - lon1) * Math.PI / 180;
+    const a = Math.sin(dLat/2) * Math.sin(dLat/2) +
+              Math.cos(lat1 * Math.PI / 180) * Math.cos(lat2 * Math.PI / 180) *
+              Math.sin(dLon/2) * Math.sin(dLon/2);
+    const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1-a));
+    const distance = R * c;
+    
+    return distance;
+}
+
+// 駅候補の表示
+function displayStationCandidates(stations) {
+    const stationsList = document.getElementById('stationsList');
+    stationsList.innerHTML = '';
+    
+    stations.forEach((station, index) => {
+        const card = document.createElement('div');
+        card.className = 'station-card';
+        
+        const accessibilityInfo = [];
+        if (station.accessibility.multipurpose_toilet) accessibilityInfo.push('多目的トイレ');
+        if (station.accessibility.elevator) accessibilityInfo.push('エレベータ');
+        if (station.accessibility.wheelchair_rental) accessibilityInfo.push('車椅子貸出');
+        if (station.accessibility.service_dog_allowed) accessibilityInfo.push('盲導犬OK');
+        
+        card.innerHTML = `
+            <div class="station-card-header">
+                <h4>候補 ${index + 1}: ${station.name}駅</h4>
+                <span class="station-distance">${station.distance.toFixed(2)} km</span>
+            </div>
+            <p><strong>路線:</strong> ${station.line}</p>
+            <p><strong>運営:</strong> ${station.operator}</p>
+            <p><strong>バリアフリー:</strong> ${accessibilityInfo.join('、')}</p>
+            <button onclick="selectStation(${station.id})" class="select-station-btn">この駅を選択</button>
+        `;
+        
+        stationsList.appendChild(card);
+    });
+}
+
+// 駅の選択
+function selectStation(stationId) {
+    const station = STATIONS_DATA.find(s => s.id === stationId);
+    if (!station) return;
+    
+    userSettings.nearestStation = station;
+    saveUserSettings();
+    
+    alert(`最寄り駅を「${station.name}駅」に設定しました。`);
+    updateHomeAddressDisplay();
+    closeModal('homeAddressModal');
+    
+    // フォームをリセット
+    document.getElementById('homeAddressForm').reset();
+    document.getElementById('homeAddressForm').style.display = 'block';
+    document.getElementById('nearestStationsArea').style.display = 'none';
+}
+
+// 自宅住所表示の更新
+function updateHomeAddressDisplay() {
+    const display = document.getElementById('homeAddressDisplay');
+    const addressSpan = document.getElementById('registeredAddress');
+    const stationSpan = document.getElementById('registeredStation');
+    
+    if (userSettings.homeAddress) {
+        display.style.display = 'block';
+        addressSpan.textContent = userSettings.homeAddress;
+        stationSpan.textContent = userSettings.nearestStation 
+            ? `${userSettings.nearestStation.name}駅（${userSettings.nearestStation.line}）`
+            : '未設定';
+    } else {
+        display.style.display = 'none';
+    }
+}
+
+// 絞り込み条件の保存
+function saveFilters() {
+    const category = document.getElementById('categoryFilter').value;
+    const accessibility = Array.from(document.querySelectorAll('input[name="accessibility"]:checked'))
+        .map(cb => cb.value);
+    
+    if (category === 'all' && accessibility.length === 0) {
+        alert('絞り込み条件を設定してください。');
+        return;
+    }
+    
+    userSettings.savedFilters = { category, accessibility };
+    saveUserSettings();
+    alert('絞り込み条件を保存しました。\n条件に合致するイベント情報が自動で配信されます。');
+    updateNotificationModal();
+}
+
+// 絞り込み条件のクリア
+function clearFilters() {
+    if (!confirm('保存された絞り込み条件をクリアしますか？')) return;
+    
+    userSettings.savedFilters = null;
+    saveUserSettings();
+    alert('絞り込み条件をクリアしました。');
+    closeModal('notificationModal');
+}
+
+// 通知設定モーダルの更新
+function updateNotificationModal() {
+    const filterStatus = document.getElementById('filterStatus');
+    const savedFiltersDisplay = document.getElementById('savedFiltersDisplay');
+    const filtersSummary = document.getElementById('filtersSummary');
+    const clearBtn = document.getElementById('clearFiltersBtn');
+    
+    if (userSettings.savedFilters) {
+        filterStatus.className = 'status-active';
+        filterStatus.innerHTML = '<span class="icon">✅</span> 絞り込み条件が設定されています';
+        
+        const { category, accessibility } = userSettings.savedFilters;
+        const categoryText = category === 'all' ? 'すべてのカテゴリー' : category;
+        const accessibilityText = accessibility.length > 0 ? accessibility.join('、') : 'すべての設備';
+        
+        filtersSummary.innerHTML = `
+            <p><strong>カテゴリー:</strong> ${categoryText}</p>
+            <p><strong>バリアフリー設備:</strong> ${accessibilityText}</p>
+        `;
+        
+        savedFiltersDisplay.style.display = 'block';
+        clearBtn.style.display = 'block';
+    } else {
+        filterStatus.className = 'status-inactive';
+        filterStatus.innerHTML = '<span class="icon">❌</span> 絞り込み条件が未設定です';
+        savedFiltersDisplay.style.display = 'none';
+        clearBtn.style.display = 'none';
+    }
+}
+
+// 経路共有の準備
+function prepareRouteShare() {
+    if (!currentEvent || !userSettings.homeCoords) {
+        alert('経路情報が利用できません。');
+        return;
+    }
+    
+    const preview = document.getElementById('sharePreview');
+    preview.innerHTML = `
+        <div class="share-preview-content">
+            <h3>${currentEvent.name}</h3>
+            <p><strong>日時:</strong> ${currentEvent.date} ${currentEvent.time}</p>
+            <p><strong>会場:</strong> ${currentEvent.venue}</p>
+            <div class="share-map-preview">
+                <p>📍 出発地: ${userSettings.homeAddress}</p>
+                ${userSettings.nearestStation ? `<p>🚉 最寄り駅: ${userSettings.nearestStation.name}駅</p>` : ''}
+                <p>🎯 目的地: ${currentEvent.venue}</p>
+                <div class="share-map-placeholder">
+                    <p style="text-align: center; padding: 40px;">
+                        🗺️<br>徒歩ルート地図<br>(実際の共有時に含まれます)
+                    </p>
+                </div>
+            </div>
+        </div>
+    `;
+}
+
+// ===== 共有（メール）/ 印刷（郵送・FAX）は「ブラウザ印刷（PDF保存）」方式に変更 =====
+// 理由：
+//  - jsPDF標準では日本語が文字化けする
+//  - html2canvasでは地図タイルがCORSで灰色になりやすい
+
+function ensureRouteReady() {
+    if (!currentEvent || !userSettings.homeCoords) {
+        alert('先にイベント詳細を開き、経路を表示してください。');
+        return false;
+    }
+    if (!lastWalkingRouteCoords || lastWalkingRouteCoords.length < 2) {
+        alert('経路（徒歩ルート）がまだ取得できていません。経路表示を確認してください。');
+        return false;
+    }
+    return true;
+}
+
+function openRoutePrintWindow(mode) {
+    // mode: 'postal' | 'fax' | 'email'
+    const isPostal = mode === 'postal';
+    const isFax = mode === 'fax';
+    const title = isPostal ? 'イベントのご案内（郵送用）' : isFax ? 'イベントのご案内（FAX送信用）' : 'イベントのご案内（メール添付用PDF）';
+
+    const faxInput = document.getElementById('faxInput');
+    const faxNumber = (faxInput?.value || '').trim();
+
+    
+// Compact route text for one-page print (remove excessive blank lines)
+const routeDetailsElem = document.getElementById('routeDetails');
+const rawRouteText = routeDetailsElem ? routeDetailsElem.innerText : '';
+const compactRouteText = buildCompactRouteSummary(rawRouteText);
+
+const payload = {
+        recipientName: (currentRecipient?.name || ''),
+        routeText: compactRouteText,
+        title,
+        event: {
+            name: currentEvent?.name,
+            date: currentEvent?.date,
+            time: currentEvent?.time,
+            venue: currentEvent?.venue,
+            address: currentEvent?.address
+        ,
+            description: currentEvent?.description || '',
+            accessibility: currentEvent?.accessibility || []
+        },
+        homeAddress: userSettings.homeAddress || '',
+        nearestStation: userSettings.nearestStation ? userSettings.nearestStation.name : '',
+        faxNumber,
+        start: lastRouteStart,
+        end: lastRouteEnd,
+        routeCoords: lastWalkingRouteCoords,
+        routeDetailsHtml: (document.getElementById('routeDetails')?.innerHTML || ''),
+        routeSummaryText: (document.getElementById('routeDetails')?.innerText || '')
+    };
+
+    const pageCss = isPostal
+        ? `@page { size: 100mm 148mm; margin: 6mm; }`
+        : `@page{ size: A4; margin: 8mm; }`;
+
+    const html = `<!doctype html>
+<html lang="ja">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>${title}</title>
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+  <style>
+
+    /* --- Compact one-page layout --- */
+    body{font-size:10px; line-height:1.25;}
+    h1{font-size:16px; margin:0 0 4px 0;}
+    h2{font-size:12px; margin:8px 0 4px;}
+    .note{font-size:10px; margin:0 0 6px 0;}
+    .greeting{border:1px solid #ddd; border-radius:10px; padding:8px 10px; margin:0 0 8px 0;}
+    .topgrid{display:grid; grid-template-columns: 1.1fr 0.9fr; gap:10px; align-items:start;}
+    #map{height:78mm; width:70%; border:1px solid #ddd; border-radius:10px; overflow:hidden; margin:0 auto;}
+    .box{border:1px solid #ddd; border-radius:10px; padding:8px 10px; margin-top:8px;}
+    .box.tight{margin-top:6px;}
+    .kv div{margin:2px 0;}
+    ul{margin:4px 0 0 18px; padding:0;}
+    li{margin:1px 0;}
+    .route-pre{white-space:pre-wrap; word-break:break-word; font-size:9px; line-height:1.15; margin:4px 0 0;}
+    /* Hide leaflet UI to save space */
+    .leaflet-control-container{display:none;}
+    .leaflet-control-attribution{font-size:8px;}
+
+    ${pageCss}
+    body{font-family: system-ui,-apple-system,"Segoe UI",Roboto,"Noto Sans JP","Hiragino Kaku Gothic ProN","Yu Gothic",Meiryo,sans-serif; color:#111;}
+    h1{font-size:${isPostal ? '14px' : '18px'}; margin:0 0 6px 0;}
+    .note{font-size:${isPostal ? '9px' : '11px'}; color:#555; margin:0 0 8px 0;}
+    .row{display:flex; gap:10px; align-items:flex-start;}
+    #map{width:100%; height:${isPostal ? '65mm' : '130mm'}; border:1px solid #ddd; border-radius:8px;}
+    .box{margin-top:8px; font-size:${isPostal ? '10px' : '12px'}; line-height:1.5;}
+    .fax{font-size:${isPostal ? '10px' : '14px'}; font-weight:700; margin:0 0 6px 0;}
+    .toolbar{position:fixed; top:8px; right:8px; display:flex; gap:8px; z-index:9999;}
+    .btn{padding:8px 10px; border:1px solid #ccc; background:#fff; border-radius:8px; cursor:pointer; font-size:12px;}
+    .btn:hover{background:#f4f7ff;}
+    @media print{ .toolbar{display:none;} }
+  
+    .greet{ margin: 8px 0 10px; padding:8px 10px; border:1px solid #d7dbe5; border-radius:10px; background:#f6f8ff;}
+    .greet .to{ font-size: 16px; font-weight: 700; margin-bottom: 4px;}
+    .greet .brand{ margin-top:6px; font-size:12px; color:#555;}
+    .box h2{ font-size: 14px; margin: 0 0 6px; }
+    .desc{ margin-top:6px; white-space: pre-wrap; }
+    ul.bf{ margin: 6px 0 0 18px; padding:0; }
+    ul.bf li{ margin: 2px 0; }
+    .routeText{ margin-top:6px; white-space: pre-wrap; }
+
+  </style>
+</head>
+<body>
+  <div class="toolbar">
+    <button class="btn" onclick="window.print()">PDFとして保存/印刷</button>
+  </div>
+
+  ${isFax ? `<div class="fax">FAX宛先：${faxNumber || '（未入力）'}</div>` : ''}
+  <h1>${title}</h1>
+  <div class="note">地図が表示されたことを確認してから「PDFとして保存/印刷」を押してください。</div>
+  <div class="greeting">
+    <div><b>${payload.recipientName || "○○"}様</b></div>
+    <div>お勧めイベントのご案内です。</div>
+    <div>興味を持っていただけたら是非ご参加ください</div>
+    <div>ならやさしいイベントナビ</div>
+  </div>
+
+  <div class="topgrid">
+    <div id="map"></div>
+    <div class="box tight">
+      <h2>イベント詳細</h2>
+    <div><b>イベント名：</b>${payload.event.name || ''}</div>
+    <div><b>日時：</b>${payload.event.date || ''} ${payload.event.time || ''}</div>
+    <div><b>会場：</b>${payload.event.venue || ''}</div>
+    <div><b>住所：</b>${payload.event.address || ''}</div>
+    ${payload.event.description ? `<div class="desc">${payload.event.description}</div>` : ''}
+  </div>
+  </div>
+
+  </div>
+
+  <div class="box">
+    <h2>バリアフリー情報</h2>
+    ${(() => {
+      const a = payload.event.accessibility || [];
+      const has = (k) => a.includes(k);
+      const rows = [
+        ['多目的トイレ', has('多目的トイレ')],
+        ['エレベーター', has('エレベーター')],
+        ['段差への対応(スロープ等)', has('段差への対応')],
+        ['優先駐車場', has('優先駐車場')],
+        ['車椅子貸出', has('車椅子貸出')],
+        ['オストメイトトイレ', has('オストメイトトイレ')], 
+      ];
+      return `<ul class="bf">` + rows.map(([label, ok]) => `<li>${label}：${ok ? '〇' : '×'}</li>`).join('') + `</ul>`;
+    })()}
+  </div>
+
+  <div class="box">
+    <h2>経路情報</h2>
+    ${payload.nearestStation ? `<div><b>最寄り駅：</b>${payload.nearestStation}駅</div>` : ''}
+    <div><b>出発地：</b>${payload.homeAddress || ''}</div>
+    <div class="routeText">${payload.routeText || ''}</div>
+  </div>
+
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+  <script>
+    const payload = ${JSON.stringify(payload)};
+    const map = L.map('map', { zoomControl: true });
+    // 通常表示と同じくOSMタイル（印刷はブラウザ機能のためCORS問題が起きにくい）
+    L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+      maxZoom: 19,
+      attribution: '&copy; OpenStreetMap contributors'
+    }).addTo(map);
+
+    const coords = payload.routeCoords || [];
+    const line = L.polyline(coords, { color:'#2196F3', weight:5, opacity:0.8 }).addTo(map);
+
+    if (payload.start) {
+      L.marker([payload.start.lat, payload.start.lng]).addTo(map).bindPopup(payload.start.label || '出発');
+    }
+    if (payload.end) {
+      L.marker([payload.end.lat, payload.end.lng]).addTo(map).bindPopup(payload.end.label || '目的地');
+    }
+
+    const b = line.getBounds();
+    map.fitBounds(b, { padding:[30,30], maxZoom: 15 });
+
+    // タイル描画のため軽く待ってからサイズ再計算
+    setTimeout(() => { map.invalidateSize(); }, 300);
+  </script>
+</body>
+</html>`;
+
+    const w = window.open('', '_blank');
+    if (!w) {
+        alert('ポップアップがブロックされました。ブラウザの設定で許可してください。');
+        return;
+    }
+    w.document.open();
+    w.document.write(html);
+    w.document.close();
+}
+
+// メールで共有（添付用PDFは別ウィンドウで作成→手動添付）
+function shareViaEmail() {
+  if (!currentEvent) return;
+
+  const recipient = (currentRecipient && currentRecipient.name) ? `${currentRecipient.name} 様` : "○○様";
+
+  // route summary from current routeDetails, if available
+  const routeDetailsElem = document.getElementById('routeDetails');
+  const routeTextRaw = routeDetailsElem ? routeDetailsElem.innerText : "";
+  const routeSummary = buildCompactRouteSummary(routeTextRaw);
+
+  const subject = encodeURIComponent(`【おすすめイベント】${currentEvent.name}`);
+  const bodyLines = [];
+  bodyLines.push(`${recipient}`);
+  bodyLines.push("");
+  bodyLines.push("お勧めイベントのご案内です。");
+  bodyLines.push("興味を持っていただけたら是非ご参加ください。");
+  bodyLines.push("");
+  bodyLines.push("【イベント概要】");
+  bodyLines.push(`・イベント名：${currentEvent.name}`);
+  bodyLines.push(`・日時：${currentEvent.date} ${currentEvent.time}`);
+  bodyLines.push(`・会場：${currentEvent.venue}`);
+  bodyLines.push(`・住所：${currentEvent.address}`);
+  if (currentEvent.description) {
+    bodyLines.push("");
+    bodyLines.push("【概要】");
+    bodyLines.push(currentEvent.description);
+  }
+  if (routeSummary) {
+    bodyLines.push("");
+    bodyLines.push(routeSummary);
+  }
+  bodyLines.push("");
+  bodyLines.push("詳細な地図・バリアフリー情報は、添付PDFをご覧ください。");
+  bodyLines.push("");
+  bodyLines.push("ならやさしいイベントナビ");
+
+  const body = encodeURIComponent(bodyLines.join("\n"));
+  window.location.href = `mailto:?subject=${subject}&body=${body}`;
+}
+
+// 郵送（はがきサイズの印刷ページ）
+function shareViaPostal() {
+    if (!ensureRouteReady()) return;
+    openRoutePrintWindow('postal');
+}
+
+// FAX（A4サイズの印刷ページ）
+function shareViaFax() {
+    if (!ensureRouteReady()) return;
+    openRoutePrintWindow('fax');
+}
+
+// LINEで共有
+function shareViaLine() {
+    if (!currentEvent) return;
+    
+    const text = encodeURIComponent(
+        `【イベント情報】${currentEvent.name}\n` +
+        `${currentEvent.date} ${currentEvent.time}\n` +
+        `${currentEvent.venue}\n` +
+        `${window.location.href}`
+    );
+    
+    window.open(`https://line.me/R/msg/text/?${text}`, '_blank');
+}
+
+// 経路画像のダウンロード
+function downloadRouteImage() {
+    alert('この機能は準備中です。\n画像として保存する機能は今後実装予定です。');
+}
+
+// リンクをコピー
+function copyRouteLink() {
+    const link = window.location.href;
+    navigator.clipboard.writeText(link).then(() => {
+        alert('リンクをコピーしました！');
+    }).catch(err => {
+        console.error('コピーエラー:', err);
+        alert('リンクのコピーに失敗しました。');
+    });
+}
+
+// イベントのフィルタリング
+function filterEvents() {
+    console.log('filterEvents 呼び出し');  // ← デバッグ用
+    
+    const category = document.getElementById('categoryFilter').value;
+    const walkTimeLimit = parseInt(document.getElementById('walkTimeFilter').value);
+    
+    console.log('徒歩時間制限:', walkTimeLimit);  // ← デバッグ用
+    const selectedAccessibility = Array.from(document.querySelectorAll('input[name="accessibility"]:checked'))
+        .map(cb => cb.value);
+    
+    let filteredEvents = EVENTS_DATA;
+    
+    // カテゴリーフィルター
+    if (category !== 'all') {
+        filteredEvents = filteredEvents.filter(event => event.category === category);
+    }
+    
+    // バリアフリー設備フィルター
+    if (selectedAccessibility.length > 0) {
+        filteredEvents = filteredEvents.filter(event => {
+            return selectedAccessibility.every(item => event.accessibility.includes(item));
+        });
+    }
+    
+    // ② 徒歩時間フィルター（v5.6新機能）
+    if (!isNaN(walkTimeLimit) && walkTimeLimit > 0) {
+        filteredEvents = filteredEvents.filter(event => {
+            // 会場の最寄り駅までの直線距離を計算（簡易版）
+            let minDistance = Infinity;
+            
+            STATIONS_DATA.forEach(station => {
+                const distance = calculateDistance(
+                    event.lat, event.lon,
+                    station.lat, station.lon
+                );
+                if (distance < minDistance) {
+                    minDistance = distance;
+                }
+            });
+            
+            // 時速4km（分速66.67m）で徒歩時間を計算
+            const walkTimeMinutes = Math.round((minDistance * 1000) / 66.67);
+            return walkTimeMinutes <= walkTimeLimit;
+        });
+    }
+    
+    displayEvents(filteredEvents);
+    addEventMarkers(filteredEvents);
+}
+
+// 文字サイズの切り替え
+function toggleTextSize() {
+    const sizes = ['small', 'medium', 'large'];
+    const currentIndex = sizes.indexOf(userSettings.textSize);
+    const nextIndex = (currentIndex + 1) % sizes.length;
+    userSettings.textSize = sizes[nextIndex];
+    
+    applyAccessibilitySettings();
+    saveUserSettings();
+}
+
+// コントラストの切り替え
+function toggleContrast() {
+    userSettings.highContrast = !userSettings.highContrast;
+    applyAccessibilitySettings();
+    saveUserSettings();
+}
+
+// アクセシビリティ設定の適用
+function applyAccessibilitySettings() {
+    document.body.classList.remove('text-small', 'text-medium', 'text-large');
+    document.body.classList.add(`text-${userSettings.textSize}`);
+    
+    if (userSettings.highContrast) {
+        document.body.classList.add('high-contrast');
+    } else {
+        document.body.classList.remove('high-contrast');
+    }
+}
+
+// ユーザー設定の保存
+function saveUserSettings() {
+    localStorage.setItem('naraEventNaviSettings', JSON.stringify(userSettings));
+}
+
+// ユーザー設定の読み込み
+function loadUserSettings() {
+    const saved = localStorage.getItem('naraEventNaviSettings');
+    if (saved) {
+        userSettings = JSON.parse(saved);
+        updateHomeAddressDisplay();
+    }
+}
+
+// モーダルを開く
+function openModal(modalId) {
+    const modal = document.getElementById(modalId);
+    modal.style.display = 'block';
+    modal.setAttribute('aria-hidden', 'false');
+}
+
+// モーダルを閉じる
+function closeModal(modalId) {
+    const modal = document.getElementById(modalId);
+    modal.style.display = 'none';
+    modal.setAttribute('aria-hidden', 'true');
+}
+
+// ③ 通知方法選択機能（v5.6新機能）
+function initNotificationMethodHandlers() {
+    const notificationCheckboxes = [
+        'emailNotification',
+        'smsNotification',
+        'faxNotification',
+        'mailNotification'
+    ];
+    
+    const inputAreas = {
+        'emailNotification': 'emailInputArea',
+        'smsNotification': 'lineInputArea',
+        'faxNotification': 'faxInputArea',
+        'mailNotification': 'mailInputArea'
+    };
+    
+    notificationCheckboxes.forEach(checkboxId => {
+        const checkbox = document.getElementById(checkboxId);
+        if (checkbox) {
+            checkbox.addEventListener('change', () => {
+                updateContactInfoArea();
+            });
+        }
+    });
+    
+    // 通知設定保存ボタン
+    const saveBtn = document.getElementById('saveNotificationBtn');
+    if (saveBtn) {
+        saveBtn.addEventListener('click', saveNotificationSettings);
+    }
+}
+
+function updateContactInfoArea() {
+    const contactArea = document.getElementById('contactInfoArea');
+    const inputAreas = {
+        'emailNotification': 'emailInputArea',
+        'smsNotification': 'lineInputArea',
+        'faxNotification': 'faxInputArea',
+        'mailNotification': 'mailInputArea'
+    };
+    
+    // 少なくとも1つのチェックボックスが選択されているか確認
+    let anySelected = false;
+    for (const checkboxId in inputAreas) {
+        const checkbox = document.getElementById(checkboxId);
+        const inputArea = document.getElementById(inputAreas[checkboxId]);
+        
+        if (checkbox && checkbox.checked) {
+            anySelected = true;
+            if (inputArea) inputArea.style.display = 'block';
+        } else {
+            if (inputArea) inputArea.style.display = 'none';
+        }
+    }
+    
+    // 連絡先入力エリアの表示/非表示
+    if (contactArea) {
+        contactArea.style.display = anySelected ? 'block' : 'none';
+    }
+}
+
+function saveNotificationSettings() {
+    const settings = {
+        email: {
+            enabled: document.getElementById('emailNotification')?.checked || false,
+            address: document.getElementById('emailInput')?.value || ''
+        },
+        line: {
+            enabled: document.getElementById('smsNotification')?.checked || false,
+            id: document.getElementById('lineInput')?.value || ''
+        },
+        fax: {
+            enabled: document.getElementById('faxNotification')?.checked || false,
+            number: document.getElementById('faxInput')?.value || ''
+        },
+        mail: {
+            enabled: document.getElementById('mailNotification')?.checked || false,
+            address: document.getElementById('mailInput')?.value || ''
+        }
+    };
+    
+    // バリデーション
+    let hasError = false;
+    let errorMsg = '';
+    
+    if (settings.email.enabled && !settings.email.address) {
+        hasError = true;
+        errorMsg += 'メールアドレスを入力してください。\n';
+    }
+    if (settings.line.enabled && !settings.line.id) {
+        hasError = true;
+        errorMsg += 'LINE ID または連携コードを入力してください。\n';
+    }
+    if (settings.fax.enabled && !settings.fax.number) {
+        hasError = true;
+        errorMsg += 'FAX番号を入力してください。\n';
+    }
+    if (settings.mail.enabled && !settings.mail.address) {
+        hasError = true;
+        errorMsg += '郵送先住所を入力してください。\n';
+    }
+    
+    if (hasError) {
+        alert(errorMsg);
+        return;
+    }
+    
+    // 設定を保存
+    userSettings.notificationMethods = settings;
+    saveUserSettings();
+    
+    // 成功メッセージ
+    const methodNames = [];
+    if (settings.email.enabled) methodNames.push('メール');
+    if (settings.line.enabled) methodNames.push('LINE');
+    if (settings.fax.enabled) methodNames.push('FAX');
+    if (settings.mail.enabled) methodNames.push('郵送');
+    
+    alert(`通知設定を保存しました。\n配信方法: ${methodNames.join('、')}`);
+    
+    console.log('保存された通知設定:', settings);
+}
+
+// 初期化処理に追加
+document.addEventListener('DOMContentLoaded', () => {
+    // 既存の初期化後に通知方法ハンドラーを追加
+    setTimeout(() => {
+        initNotificationMethodHandlers();
+    }, 500);
+});
+
